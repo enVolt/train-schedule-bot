@@ -2,14 +2,19 @@ import os
 import logging
 import asyncio
 from functools import wraps
+from datetime import datetime
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
 from sqlite_persistence import SQLitePersistence
-import requests
+from national_rail_api import fetch_train_schedule
 
 # Load environment variables
 load_dotenv()
+
+# --- Configuration ---
+NATIONAL_RAIL_API_TOKEN = os.getenv("NATIONAL_RAIL_API_TOKEN")
+USER_AGENT = os.getenv("USER_AGENT", "train-bot-app/0.0.1") # Default user agent
 
 # --- Authorization Setup ---
 AUTHORIZED_USER_IDS_STR = os.getenv("AUTHORIZED_USER_IDS", "")
@@ -58,12 +63,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     welcome_text = (
         "Welcome to the Train Schedule Bot!\n\n"
         "I can help you check train schedules for your commute.\n\n"
-        "Here are the commands to get started:\n"
-        "/set_home <CRS_CODE> - Set your home station (e.g., /set_home KGX)\n"
-        "/set_office <CRS_CODE> - Set your office station (e.g., /set_office EUS)\n"
-        "/now - Get the latest train schedule on-demand (choose direction).\n"
-        "/nowt - Get the latest train schedule: Home to Office.\n"
-        "/nowf - Get the latest train schedule: Office to Home.\n"
+        "**Configuration:**\n"
+        "/set_home <CRS> - Set your home station (e.g., /set_home KGX)\n"
+        "/set_office <CRS> - Set your office station (e.g., /set_office EUS)\n\n"
+        "**On-Demand Schedules:**\n"
+        "/now - Get schedule now (choose direction).\n"
+        "/nowt - Get schedule: Home to Office.\n"
+        "/nowf - Get schedule: Office to Home.\n\n"
+        "**Scheduled Notifications:**\n"
+        "/set_to_slot <HH:mm AM/PM> - Schedule morning commute (e.g., /set_to_slot 08:30 AM)\n"
+        "/set_from_slot <HH:mm AM/PM> - Schedule evening commute (e.g., /set_from_slot 05:30 PM)\n"
     )
     await update.message.reply_text(welcome_text)
 
@@ -90,6 +99,31 @@ async def set_office(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text(f"Office station set to {crs_code}")
     except (IndexError, ValueError):
         await update.message.reply_text("Usage: /set_office <3_LETTER_CRS_CODE>")
+
+async def _set_slot(update: Update, context: ContextTypes.DEFAULT_TYPE, slot_type: str) -> None:
+    """Helper function to set a time slot."""
+    if not context.args or len(context.args) != 2:
+        await update.message.reply_text(f"Usage: /set_{slot_type}_slot <HH:mm AM/PM>")
+        return
+
+    time_str = f"{context.args[0]} {context.args[1].upper()}"
+    try:
+        # Validate the time format
+        datetime.strptime(time_str, "%I:%M %p")
+        context.user_data[f'{slot_type}_slot'] = time_str
+        await update.message.reply_text(f"Notification for '{slot_type}' commute set to {time_str}.")
+    except ValueError:
+        await update.message.reply_text("Invalid time format. Please use HH:mm AM/PM (e.g., 08:30 AM).")
+
+@restricted
+async def set_to_slot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Sets the morning commute time slot (home to office)."""
+    await _set_slot(update, context, "to")
+
+@restricted
+async def set_from_slot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Sets the evening commute time slot (office to home)."""
+    await _set_slot(update, context, "from")
 
 @restricted
 async def now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -121,7 +155,7 @@ async def nowt_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     route_text = "Home to Office"
     await update.message.reply_text(f"Fetching schedule for {route_text}...")
     
-    schedule_text = await fetch_train_schedule(home_crs, office_crs)
+    schedule_text = await fetch_train_schedule(NATIONAL_RAIL_API_TOKEN, USER_AGENT, home_crs, office_crs)
     await update.message.reply_text(schedule_text)
 
 @restricted
@@ -137,7 +171,7 @@ async def nowf_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     route_text = "Office to Home"
     await update.message.reply_text(f"Fetching schedule for {route_text}...")
     
-    schedule_text = await fetch_train_schedule(office_crs, home_crs)
+    schedule_text = await fetch_train_schedule(NATIONAL_RAIL_API_TOKEN, USER_AGENT, office_crs, home_crs)
     await update.message.reply_text(schedule_text)
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -168,70 +202,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     await query.edit_message_text(text=f"Fetching schedule for {route_text}...")
     
-    schedule_text = await fetch_train_schedule(origin, destination)
+    schedule_text = await fetch_train_schedule(NATIONAL_RAIL_API_TOKEN, USER_AGENT, origin, destination)
     await context.bot.send_message(chat_id=query.message.chat_id, text=schedule_text)
-
-
-# --- Helper Functions & API Logic ---
-
-async def fetch_train_schedule(origin: str, destination: str) -> str:
-    """Fetches the train schedule from the National Rail API using the official REST endpoint."""
-    api_token = os.getenv("NATIONAL_RAIL_API_TOKEN")
-    if not api_token:
-        return "NATIONAL_RAIL_API_TOKEN not found in environment variables."
-
-    url = f"https://api1.raildata.org.uk/1010-live-departure-board-dep1_2/LDBWS/api/20220120/GetDepBoardWithDetails/{origin}"
-    params = {
-        "filterCrs": destination,
-        "filterType": "to",
-        "numRows": 10,
-        "timeWindow": 120,
-    }
-    headers = {
-        "x-apikey": api_token,
-        'user-agent': 'ashwani-my-app/0.0.1'
-    }
-
-    try:
-        response = await asyncio.to_thread(requests.get, url, params=params, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-
-        if not data or not data.get("trainServices"):
-            return f"No direct services found from {origin} to {destination} at this time."
-
-        schedule_lines = [f"Trains from {origin} to {destination}:\n"]
-        for service in data["trainServices"]:
-            std = service.get("std")
-            etd = service.get("etd")
-            platform = service.get("platform", "TBA")
-            operator = service.get("operator")
-            is_cancelled = service.get("isCancelled", False)
-
-            status = f"{std} -> {etd}"
-            if etd and etd.lower() != 'on time':
-                status = f"{std} (exp. {etd})"
-            if is_cancelled:
-                status = f"{std} - CANCELLED"
-
-            schedule_lines.append(
-                f"- {status}, Plat: {platform}, Op: {operator}"
-            )
-        
-        return "\n".join(schedule_lines)
-
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 401:
-            logger.error(f"Authentication error: {e}")
-            return "Authentication failed. Please check your API token."
-        logger.error(f"HTTP error fetching train schedule: {e}")
-        return f"Sorry, there was a problem reaching the schedule service (HTTP {e.response.status_code})."
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching train schedule: {e}")
-        return "Sorry, I couldn't connect to the train schedule service."
-    except Exception as e:
-        logger.error(f"An unexpected error occurred: {e}")
-        return "An unexpected error occurred while fetching the schedule."
 
 
 # --- Main Application Setup ---
@@ -257,6 +229,8 @@ def main() -> None:
     application.add_handler(CommandHandler("nowt", nowt_command))
     application.add_handler(CommandHandler("nowf", nowf_command))
     application.add_handler(CallbackQueryHandler(button))
+    application.add_handler(CommandHandler("set_to_slot", set_to_slot))
+    application.add_handler(CommandHandler("set_from_slot", set_from_slot))
 
     # Run the bot until the user presses Ctrl-C
     logger.info("Starting bot...")
