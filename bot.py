@@ -1,6 +1,7 @@
 import os
 import logging
 import asyncio
+from functools import wraps
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
@@ -10,16 +11,50 @@ import requests
 # Load environment variables
 load_dotenv()
 
+# --- Authorization Setup ---
+AUTHORIZED_USER_IDS_STR = os.getenv("AUTHORIZED_USER_IDS", "")
+if not AUTHORIZED_USER_IDS_STR:
+    logging.warning("AUTHORIZED_USER_IDS is not set. The bot will be open to everyone.")
+    AUTHORIZED_USER_IDS = set()
+else:
+    AUTHORIZED_USER_IDS = {int(user_id.strip()) for user_id in AUTHORIZED_USER_IDS_STR.split(',') if user_id.strip()}
+
 # Enable logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
+
+def restricted(func):
+    """
+    Restricts access to a command handler to authorized user IDs.
+    If the list of authorized IDs is empty, the bot is considered public.
+    """
+    @wraps(func)
+    async def wrapped(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        user_id = update.effective_user.id
+        if AUTHORIZED_USER_IDS and user_id not in AUTHORIZED_USER_IDS:
+            logging.warning(f"Unauthorized access denied for user_id {user_id}.")
+            await update.message.reply_text("Sorry, you are not authorized to use this bot.")
+            return
+        return await func(update, context, *args, **kwargs)
+    return wrapped
+
+
 # --- Command Handlers ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sends a welcome message and explains the bot's functionality."""
+    user_id = update.effective_user.id
+    if AUTHORIZED_USER_IDS and user_id not in AUTHORIZED_USER_IDS:
+        logging.warning(f"Unauthorized user {user_id} tried to start the bot.")
+        await update.message.reply_text(
+            "Sorry, you are not authorized to use this bot.\n"
+            f"If you'd like to request access, please provide the admin with your User ID: `{user_id}`"
+        )
+        return
+
     welcome_text = (
         "Welcome to the Train Schedule Bot!\n\n"
         "I can help you check train schedules for your commute.\n\n"
@@ -32,6 +67,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
     await update.message.reply_text(welcome_text)
 
+@restricted
 async def set_home(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sets the user's home station."""
     try:
@@ -43,6 +79,7 @@ async def set_home(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except (IndexError, ValueError):
         await update.message.reply_text("Usage: /set_home <3_LETTER_CRS_CODE>")
 
+@restricted
 async def set_office(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sets the user's office station."""
     try:
@@ -54,6 +91,7 @@ async def set_office(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     except (IndexError, ValueError):
         await update.message.reply_text("Usage: /set_office <3_LETTER_CRS_CODE>")
 
+@restricted
 async def now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Provides an on-demand schedule."""
     home_crs = context.user_data.get('home_crs')
@@ -70,6 +108,7 @@ async def now(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text('Please choose a direction:', reply_markup=reply_markup)
 
+@restricted
 async def nowt_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Gets the train schedule from Home to Office."""
     home_crs = context.user_data.get('home_crs')
@@ -85,6 +124,7 @@ async def nowt_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     schedule_text = await fetch_train_schedule(home_crs, office_crs)
     await update.message.reply_text(schedule_text)
 
+@restricted
 async def nowf_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Gets the train schedule from Office to Home."""
     home_crs = context.user_data.get('home_crs')
@@ -103,6 +143,14 @@ async def nowf_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles button presses for the /now command."""
     query = update.callback_query
+    user_id = query.from_user.id
+
+    # Restrict access for callback queries as well
+    if AUTHORIZED_USER_IDS and user_id not in AUTHORIZED_USER_IDS:
+        logging.warning(f"Unauthorized access denied for user_id {user_id} via callback query.")
+        await query.answer("Sorry, you are not authorized to use this bot.", show_alert=True)
+        return
+
     await query.answer()
 
     home_crs = context.user_data.get('home_crs')
