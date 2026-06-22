@@ -26,7 +26,7 @@ else:
 
 # Enable logging
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.DEBUG
 )
 logger = logging.getLogger(__name__)
 
@@ -110,7 +110,11 @@ async def _set_slot(update: Update, context: ContextTypes.DEFAULT_TYPE, slot_typ
     try:
         # Validate the time format
         datetime.strptime(time_str, "%I:%M %p")
+        
+        logger.debug(f"User data before update: {context.user_data}")
         context.user_data[f'{slot_type}_slot'] = time_str
+        logger.debug(f"User data after update: {context.user_data}")
+
         await update.message.reply_text(f"Notification for '{slot_type}' commute set to {time_str}.")
     except ValueError:
         await update.message.reply_text("Invalid time format. Please use HH:mm AM/PM (e.g., 08:30 AM).")
@@ -239,3 +243,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

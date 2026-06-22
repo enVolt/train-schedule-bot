@@ -1,4 +1,5 @@
 __pycache__
 user_data.pickle
 bot_data.db
+bot_data.db-journal
 .env

@@ -1,0 +1,10 @@
+# train-schedule-bot
+
+A Telegram bot for real-time UK train schedules.
+
+## Context
+- [Project Context](.llm/context.md)
+- [Development Instructions](.llm/instructions.md)
+
+## Tech Stack
+- Python, python-telegram-bot, SQLite, National Rail Darwin API.

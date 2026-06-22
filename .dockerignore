@@ -1,0 +1,31 @@
+# Ignore version control
+.git
+.gitignore
+
+# Ignore local config/environment secrets
+.env
+.env.example
+
+# Ignore Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.venv/
+env/
+venv/
+
+# Ignore database and logs
+*.db
+*.db-journal
+*.log
+
+# Ignore PM2 artifacts
+ecosystem.config.js
+node_modules/
+package-lock.json
+
+# Ignore agent config
+.llm/
+GEMINI.md

@@ -75,6 +75,7 @@ async def resync_all_user_schedules(bot: telegram.Bot, scheduler: AsyncIOSchedul
     for user_id, data_json in users:
         try:
             user_data = json.loads(data_json)
+            logger.info(f"Processing user {user_id} with data: {user_data}")
             home_crs = user_data.get('home_crs')
             office_crs = user_data.get('office_crs')
 
